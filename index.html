@@ -670,11 +670,38 @@ let S = {
   newAbast:{frota:'',data:'',km:'',litros:''},
   newMaint:{frota:'',data:'',km:'',servico:'troca_oleo_motor',obs:''},
   newLubri:{frota:'',data:'',km:'',oleo_motor_l:'',oleo_cambio_l:'',oleo_diferencial_l:'',graxa_kg:'',arla32_l:'',filtro_oleo:false,filtro_ar:false,filtro_combustivel:false,filtro_arla:false,obs:'',mecanico:''},
+  newUser:{nome:'',email:'',perfil:'administrativo',senha:''},
+  editOS:null,
   importData:[],importStatus:'',
   lubrificacoes:[],
+  funcionarios:[],
+  usuarios:[],
+  fluidos:[],
+  lookupFrota:'', lookupResult:null,
 };
 
+// ── PATCH: atualiza estado sem re-render (para inputs) ──
+function patch(path, val){
+  const parts = path.split('.');
+  if(parts.length===1){ S[parts[0]]=val; }
+  else if(parts.length===2){ S[parts[0]] = {...S[parts[0]], [parts[1]]:val}; }
+  // Não chama render() — o valor fica no estado mas o DOM não é recriado
+}
+
+// set() para navegação e mudanças estruturais (chama render)
 function set(u){Object.assign(S,u);render();}
+
+// ── HELPER: ler valores atuais de inputs antes de submeter ──
+function readForm(prefix){
+  const result={};
+  document.querySelectorAll(`[data-form="${prefix}"]`).forEach(el=>{
+    const key=el.dataset.key;
+    if(!key)return;
+    if(el.type==='checkbox'||el.type==='radio') result[key]=el.checked;
+    else result[key]=el.value;
+  });
+  return result;
+}
 
 // ── ICONS ──
 const IC={
@@ -1099,6 +1126,8 @@ function renderOrdens(){
             <span class="badge b-${o.status}">${statusMap[o.status]}</span>
             ${o.status==='aberta'?`<button class="btn btn-ghost btn-sm" style="color:var(--blue3)" onclick="changeOS('${o.num}','em_andamento')">Iniciar</button>`:''}
             ${o.status==='em_andamento'?`<button class="btn btn-success btn-sm" onclick="changeOS('${o.num}','concluida')">${ic('check')} Concluir</button>`:''}
+            <button class="btn btn-ghost btn-sm" onclick="set({modal:'editar_os',editOS:{...serviceOrders.find(x=>x.num==='${o.num}')}})" title="Editar">${ic('wrench')}</button>
+            <button class="btn btn-ghost btn-sm" onclick="imprimirOS('${o.num}')" title="Imprimir PDF">🖨</button>
           </div>
         </div>
         <div style="font-size:11px;margin-bottom:5px">${o.defeito}</div>
@@ -1400,67 +1429,91 @@ function renderDetail(){
   </div>`;
 }
 
-// ── MODAL NOVA OS ──
+// ── MODAL NOVA / EDIÇÃO DE OS ──
 function renderNovaOS(){
-  const f=S.newOS;
-  return`<div class="overlay" onclick="if(event.target===this)set({modal:null})">
-    <div class="modal">
-      <div class="modal-hd"><span class="modal-title">${ic('clip')} Nova Ordem de Serviço</span><button class="modal-close" onclick="set({modal:null})">${IC.x}</button></div>
+  const edit=S.editOS;
+  const titulo=edit?`Editar ${edit.num}`:'Nova Ordem de Serviço';
+  const frota=edit?edit.frota:(S.newOS.frota||'');
+  const defeito=edit?edit.defeito:'';
+  const mecanico=edit?edit.mecanico:'';
+  const prioridade=edit?edit.prioridade:'normal';
+  const statusAtual=edit?edit.status:'aberta';
+  const obs=edit?edit.obs||'':'';
+  const mecList=[...new Set(['Carlos Souza','José Oliveira','Ana Lima','Pedro Santos','Roberto Alves',...S.funcionarios.filter(f=>f.ativo).map(f=>f.nome_completo)])];
+  return`<div class="overlay" onclick="if(event.target===this)set({modal:null,editOS:null})">
+    <div class="modal" style="max-width:600px">
+      <div class="modal-hd"><span class="modal-title">${ic('clip')} ${titulo}</span><button class="modal-close" onclick="set({modal:null,editOS:null})">${IC.x}</button></div>
       <div class="modal-body">
         <div class="frow">
           <div class="fg"><label class="fl">Nº Frota *</label>
-            <select class="fc fsl" onchange="set({newOS:{...S.newOS,frota:parseInt(this.value)||this.value}})">
+            <select id="os_frota" class="fc fsl">
               <option value="">Selecione...</option>
-              ${FROTA_SMADS.map(v=>`<option value="${v.frota}" ${f.frota===v.frota?'selected':''}>${v.frota} – ${v.modelo.substring(0,25)}</option>`).join('')}
+              ${FROTA_SMADS.map(v=>`<option value="${v.frota}" ${v.frota==frota?'selected':''}>${v.frota} – ${v.modelo.substring(0,28)}</option>`).join('')}
             </select>
           </div>
           <div class="fg"><label class="fl">Prioridade</label>
-            <select class="fc fsl" onchange="set({newOS:{...S.newOS,prioridade:this.value}})">
-              <option value="normal" ${f.prioridade==='normal'?'selected':''}>Normal</option>
-              <option value="urgente" ${f.prioridade==='urgente'?'selected':''}>Urgente</option>
+            <select id="os_prioridade" class="fc fsl">
+              <option value="normal" ${prioridade==='normal'?'selected':''}>Normal</option>
+              <option value="urgente" ${prioridade==='urgente'?'selected':''}>Urgente</option>
             </select>
           </div>
         </div>
         <div class="fg"><label class="fl">Defeito / Serviço Solicitado *</label>
-          <textarea class="fta" rows="3" placeholder="Descreva o defeito ou serviço necessário..." oninput="set({newOS:{...S.newOS,defeito:this.value}})">${f.defeito||''}</textarea>
+          <textarea id="os_defeito" class="fta" rows="3" placeholder="Descreva o defeito ou serviço...">${defeito}</textarea>
         </div>
-        <div class="fg"><label class="fl">Mecânico Responsável</label>
-          <select class="fc fsl" onchange="set({newOS:{...S.newOS,mecanico:this.value}})">
-            <option value="">A definir</option>
-            ${['Carlos Souza','José Oliveira','Ana Lima','Pedro Santos','Roberto Alves'].map(m=>`<option value="${m}" ${f.mecanico===m?'selected':''}>${m}</option>`).join('')}
-          </select>
+        <div class="frow">
+          <div class="fg"><label class="fl">Mecânico</label>
+            <select id="os_mecanico" class="fc fsl">
+              <option value="">A definir</option>
+              ${mecList.map(m=>`<option value="${m}" ${m===mecanico?'selected':''}>${m}</option>`).join('')}
+            </select>
+          </div>
+          ${edit?`<div class="fg"><label class="fl">Status</label>
+            <select id="os_status" class="fc fsl">
+              <option value="aberta" ${statusAtual==='aberta'?'selected':''}>Aberta</option>
+              <option value="em_andamento" ${statusAtual==='em_andamento'?'selected':''}>Em Andamento</option>
+              <option value="concluida" ${statusAtual==='concluida'?'selected':''}>Concluída</option>
+              <option value="cancelada" ${statusAtual==='cancelada'?'selected':''}>Cancelada</option>
+            </select>
+          </div>`:''}
         </div>
+        ${edit?`<div class="fg"><label class="fl">Resolução / Observações</label>
+          <textarea id="os_obs" class="fta" rows="2" placeholder="O que foi feito...">${obs}</textarea>
+        </div>`:''}
         <div style="display:flex;gap:8px;margin-top:6px">
-          <button class="btn btn-primary" onclick="submitOS()">Abrir OS</button>
-          <button class="btn btn-ghost" onclick="set({modal:null})">Cancelar</button>
+          <button class="btn btn-primary" onclick="${edit?'salvarEditOS()':'submitOS()'}">
+            ${edit?ic('check')+' Salvar Alterações':'Abrir OS'}
+          </button>
+          ${edit&&statusAtual!=='concluida'?`<button class="btn btn-success" onclick="concluirOSRapido()">${ic('check')} Concluir</button>`:''}
+          <button class="btn btn-ghost" onclick="set({modal:null,editOS:null})">Cancelar</button>
         </div>
       </div>
     </div>
   </div>`;
 }
 
-// ── MODAL NOVO ABASTECIMENTO ──
+// ── MODAL ABASTECIMENTO ──
 function renderNovoAbast(){
-  const f=S.newAbast;
+  const frota=S.newAbast.frota||'';
   return`<div class="overlay" onclick="if(event.target===this)set({modal:null})">
     <div class="modal">
       <div class="modal-hd"><span class="modal-title">${ic('fuel')} Registrar Abastecimento</span><button class="modal-close" onclick="set({modal:null})">${IC.x}</button></div>
       <div class="modal-body">
         <div class="frow">
           <div class="fg"><label class="fl">Nº Frota *</label>
-            <select class="fc fsl" onchange="set({newAbast:{...S.newAbast,frota:parseInt(this.value)||this.value}})">
+            <select id="ab_frota" class="fc fsl">
               <option value="">Selecione...</option>
-              ${FROTA_SMADS.map(v=>`<option value="${v.frota}" ${f.frota===v.frota?'selected':''}>${v.frota} – ${v.placa}</option>`).join('')}
+              ${FROTA_SMADS.map(v=>`<option value="${v.frota}" ${v.frota==frota?'selected':''}>${v.frota} – ${v.placa}</option>`).join('')}
             </select>
           </div>
-          <div class="fg"><label class="fl">Data *</label><input type="date" class="fc" value="${f.data}" oninput="set({newAbast:{...S.newAbast,data:this.value}})"></div>
+          <div class="fg"><label class="fl">Data *</label><input id="ab_data" type="date" class="fc" value="${S.newAbast.data||new Date().toISOString().split('T')[0]}"></div>
         </div>
         <div class="frow">
-          <div class="fg"><label class="fl">KM no Abastecimento</label><input type="number" class="fc" placeholder="ex: 327069" value="${f.km}" oninput="set({newAbast:{...S.newAbast,km:this.value}})"></div>
-          <div class="fg"><label class="fl">Litros Abastecidos *</label><input type="number" class="fc" placeholder="ex: 280.50" step="0.01" value="${f.litros}" oninput="set({newAbast:{...S.newAbast,litros:this.value}})"></div>
+          <div class="fg"><label class="fl">KM no Abastecimento</label><input id="ab_km" type="number" class="fc" placeholder="ex: 327069" value="${S.newAbast.km||''}"></div>
+          <div class="fg"><label class="fl">Litros Abastecidos *</label><input id="ab_litros" type="number" class="fc" placeholder="ex: 280.50" step="0.01" value="${S.newAbast.litros||''}"></div>
         </div>
         <div style="padding:10px 12px;background:var(--blue-bg);border-radius:var(--r3);font-size:11px;color:var(--text2);margin-bottom:12px">
-          💡 O sistema acumulará os litros automaticamente e calculará se o gatilho de manutenção foi atingido.
+          💡 O sistema acumulará os litros e recalculará os alertas automaticamente.
         </div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-primary" onclick="submitAbast()">Registrar</button>
@@ -1471,37 +1524,37 @@ function renderNovoAbast(){
   </div>`;
 }
 
-// ── MODAL NOVA MANUTENÇÃO ──
+// ── MODAL MANUTENÇÃO ──
 function renderNovoManut(){
-  const f=S.newMaint;
+  const frota=S.newMaint.frota||'';
   return`<div class="overlay" onclick="if(event.target===this)set({modal:null})">
     <div class="modal">
       <div class="modal-hd"><span class="modal-title">${ic('wrench')} Registrar Manutenção</span><button class="modal-close" onclick="set({modal:null})">${IC.x}</button></div>
       <div class="modal-body">
         <div class="frow">
           <div class="fg"><label class="fl">Nº Frota *</label>
-            <select class="fc fsl" onchange="set({newMaint:{...S.newMaint,frota:parseInt(this.value)||this.value}})">
+            <select id="mt_frota" class="fc fsl">
               <option value="">Selecione...</option>
-              ${FROTA_SMADS.map(v=>`<option value="${v.frota}" ${f.frota===v.frota?'selected':''}>${v.frota} – ${v.modelo.substring(0,22)}</option>`).join('')}
+              ${FROTA_SMADS.map(v=>`<option value="${v.frota}" ${v.frota==frota?'selected':''}>${v.frota} – ${v.modelo.substring(0,22)}</option>`).join('')}
             </select>
           </div>
-          <div class="fg"><label class="fl">Data do Serviço *</label><input type="date" class="fc" value="${f.data}" oninput="set({newMaint:{...S.newMaint,data:this.value}})"></div>
+          <div class="fg"><label class="fl">Data *</label><input id="mt_data" type="date" class="fc" value="${S.newMaint.data||new Date().toISOString().split('T')[0]}"></div>
         </div>
         <div class="frow">
-          <div class="fg"><label class="fl">KM no Serviço</label><input type="number" class="fc" placeholder="ex: 488120" value="${f.km}" oninput="set({newMaint:{...S.newMaint,km:this.value}})"></div>
+          <div class="fg"><label class="fl">KM no Serviço</label><input id="mt_km" type="number" class="fc" placeholder="ex: 488120" value="${S.newMaint.km||''}"></div>
           <div class="fg"><label class="fl">Tipo de Serviço</label>
-            <select class="fc fsl" onchange="set({newMaint:{...S.newMaint,servico:this.value}})">
+            <select id="mt_servico" class="fc fsl">
               <option value="troca_oleo_motor">Troca de Óleo Motor</option>
               <option value="troca_filtros">Troca de Filtros</option>
               <option value="revisao_completa">Revisão Completa</option>
-              <option value="troca_oleo_cambio">Troca de Óleo Câmbio</option>
+              <option value="troca_oleo_cambio">Troca Óleo Câmbio</option>
               <option value="manutencao_hidraulico">Manutenção Hidráulica</option>
               <option value="outros">Outros</option>
             </select>
           </div>
         </div>
-        <div class="fg"><label class="fl">Observações / Peças Utilizadas</label>
-          <textarea class="fta" rows="2" placeholder="Ex: Óleo Shell Rimula R6M 10W-40, 22L · Filtro Tecfil PSL625..." oninput="set({newMaint:{...S.newMaint,obs:this.value}})">${f.obs||''}</textarea>
+        <div class="fg"><label class="fl">Peças Utilizadas / Observações</label>
+          <textarea id="mt_obs" class="fta" rows="2" placeholder="Ex: Óleo Shell Rimula R6M 10W-40, 22L · Filtro Tecfil PSL625...">${S.newMaint.obs||''}</textarea>
         </div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-primary" onclick="submitManut()">Registrar</button>
@@ -1512,55 +1565,57 @@ function renderNovoManut(){
   </div>`;
 }
 
-// ── MODAL RAMPA DE LUBRIFICAÇÃO ──
+// ── MODAL LUBRIFICAÇÃO ──
 function renderNovaLubri(){
   const f=S.newLubri;
-  const tog=(campo)=>`<div class="toggle-wrap" onclick="set({newLubri:{...S.newLubri,${campo}:!S.newLubri.${campo}}})">
-    <div class="toggle${f[campo]?' on':''}"></div>
-    <span class="toggle-label">{{label}}</span>
-  </div>`;
+  const mecList=[...new Set(['Carlos Souza','José Oliveira','Ana Lima','Pedro Santos','Roberto Alves',...S.funcionarios.filter(fn=>fn.ativo).map(fn=>fn.nome_completo)])];
   return`<div class="overlay" onclick="if(event.target===this)set({modal:null})">
     <div class="modal" style="max-width:640px">
       <div class="modal-hd"><span class="modal-title">${ic('oil')} Registrar Serviço de Lubrificação</span><button class="modal-close" onclick="set({modal:null})">${IC.x}</button></div>
       <div class="modal-body">
         <div class="frow">
           <div class="fg"><label class="fl">Nº Frota *</label>
-            <select class="fc fsl" onchange="set({newLubri:{...S.newLubri,frota:parseInt(this.value)||this.value}})">
+            <select id="lb_frota" class="fc fsl">
               <option value="">Selecione...</option>
-              ${FROTA_SMADS.map(v=>`<option value="${v.frota}" ${f.frota===v.frota?'selected':''}>${v.frota} – ${v.modelo.substring(0,25)}</option>`).join('')}
+              ${FROTA_SMADS.map(v=>`<option value="${v.frota}" ${v.frota==f.frota?'selected':''}>${v.frota} – ${v.modelo.substring(0,25)}</option>`).join('')}
             </select>
           </div>
-          <div class="fg"><label class="fl">Data *</label><input type="date" class="fc" value="${f.data}" oninput="set({newLubri:{...S.newLubri,data:this.value}})"></div>
+          <div class="fg"><label class="fl">Data *</label><input id="lb_data" type="date" class="fc" value="${f.data||new Date().toISOString().split('T')[0]}"></div>
         </div>
-        <div class="fg"><label class="fl">KM no Serviço</label><input type="number" class="fc" placeholder="ex: 488120" value="${f.km}" oninput="set({newLubri:{...S.newLubri,km:this.value}})"></div>
-
+        <div class="fg"><label class="fl">KM no Serviço</label><input id="lb_km" type="number" class="fc" placeholder="ex: 488120" value="${f.km||''}"></div>
         <div class="divider"></div>
         <div class="sec-title">Lubrificantes (litros adicionados)</div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px">
-          <div class="fg"><label class="fl">Óleo Motor (L)</label><input type="number" class="fc" placeholder="0.00" step="0.01" value="${f.oleo_motor_l}" oninput="set({newLubri:{...S.newLubri,oleo_motor_l:this.value}})"></div>
-          <div class="fg"><label class="fl">Óleo Câmbio (L)</label><input type="number" class="fc" placeholder="0.00" step="0.01" value="${f.oleo_cambio_l}" oninput="set({newLubri:{...S.newLubri,oleo_cambio_l:this.value}})"></div>
-          <div class="fg"><label class="fl">Óleo Diferencial (L)</label><input type="number" class="fc" placeholder="0.00" step="0.01" value="${f.oleo_diferencial_l}" oninput="set({newLubri:{...S.newLubri,oleo_diferencial_l:this.value}})"></div>
-          <div class="fg"><label class="fl">Graxa (kg)</label><input type="number" class="fc" placeholder="0.00" step="0.01" value="${f.graxa_kg}" oninput="set({newLubri:{...S.newLubri,graxa_kg:this.value}})"></div>
-          <div class="fg"><label class="fl">ARLA 32 (L)</label><input type="number" class="fc" placeholder="0.00" step="0.01" value="${f.arla32_l}" oninput="set({newLubri:{...S.newLubri,arla32_l:this.value}})"></div>
+          <div class="fg"><label class="fl">Óleo Motor (L)</label><input id="lb_oleo_motor" type="number" class="fc" placeholder="0.00" step="0.01" value="${f.oleo_motor_l||''}"></div>
+          <div class="fg"><label class="fl">Óleo Câmbio (L)</label><input id="lb_oleo_cambio" type="number" class="fc" placeholder="0.00" step="0.01" value="${f.oleo_cambio_l||''}"></div>
+          <div class="fg"><label class="fl">Diferencial (L)</label><input id="lb_oleo_dif" type="number" class="fc" placeholder="0.00" step="0.01" value="${f.oleo_diferencial_l||''}"></div>
+          <div class="fg"><label class="fl">Graxa (kg)</label><input id="lb_graxa" type="number" class="fc" placeholder="0.00" step="0.01" value="${f.graxa_kg||''}"></div>
+          <div class="fg"><label class="fl">ARLA 32 (L)</label><input id="lb_arla" type="number" class="fc" placeholder="0.00" step="0.01" value="${f.arla32_l||''}"></div>
         </div>
-
         <div class="divider"></div>
         <div class="sec-title">Filtros Trocados</div>
         <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
-          <div class="toggle-wrap" onclick="set({newLubri:{...S.newLubri,filtro_oleo:!S.newLubri.filtro_oleo}})"><div class="toggle${f.filtro_oleo?' on':''}"></div><span class="toggle-label">Filtro de Óleo</span></div>
-          <div class="toggle-wrap" onclick="set({newLubri:{...S.newLubri,filtro_ar:!S.newLubri.filtro_ar}})"><div class="toggle${f.filtro_ar?' on':''}"></div><span class="toggle-label">Filtro de Ar</span></div>
-          <div class="toggle-wrap" onclick="set({newLubri:{...S.newLubri,filtro_combustivel:!S.newLubri.filtro_combustivel}})"><div class="toggle${f.filtro_combustivel?' on':''}"></div><span class="toggle-label">Filtro de Combustível</span></div>
-          <div class="toggle-wrap" onclick="set({newLubri:{...S.newLubri,filtro_arla:!S.newLubri.filtro_arla}})"><div class="toggle${f.filtro_arla?' on':''}"></div><span class="toggle-label">Filtro ARLA</span></div>
+          <div class="toggle-wrap" onclick="this.querySelector('.toggle').classList.toggle('on')">
+            <div class="toggle${f.filtro_oleo?' on':''}" id="lb_filtro_oleo"></div><span class="toggle-label">Filtro de Óleo</span>
+          </div>
+          <div class="toggle-wrap" onclick="this.querySelector('.toggle').classList.toggle('on')">
+            <div class="toggle${f.filtro_ar?' on':''}" id="lb_filtro_ar"></div><span class="toggle-label">Filtro de Ar</span>
+          </div>
+          <div class="toggle-wrap" onclick="this.querySelector('.toggle').classList.toggle('on')">
+            <div class="toggle${f.filtro_combustivel?' on':''}" id="lb_filtro_comb"></div><span class="toggle-label">Filtro de Combustível</span>
+          </div>
+          <div class="toggle-wrap" onclick="this.querySelector('.toggle').classList.toggle('on')">
+            <div class="toggle${f.filtro_arla?' on':''}" id="lb_filtro_arla"></div><span class="toggle-label">Filtro ARLA</span>
+          </div>
         </div>
-
         <div class="frow">
           <div class="fg"><label class="fl">Mecânico</label>
-            <select class="fc fsl" onchange="set({newLubri:{...S.newLubri,mecanico:this.value}})">
+            <select id="lb_mecanico" class="fc fsl">
               <option value="">Selecione...</option>
-              ${['Carlos Souza','José Oliveira','Ana Lima','Pedro Santos','Roberto Alves'].map(m=>`<option value="${m}" ${f.mecanico===m?'selected':''}>${m}</option>`).join('')}
+              ${mecList.map(m=>`<option value="${m}" ${m===f.mecanico?'selected':''}>${m}</option>`).join('')}
             </select>
           </div>
-          <div class="fg"><label class="fl">Observações</label><input type="text" class="fc" placeholder="Observações adicionais..." value="${f.obs||''}" oninput="set({newLubri:{...S.newLubri,obs:this.value}})"></div>
+          <div class="fg"><label class="fl">Observações</label><input id="lb_obs" type="text" class="fc" placeholder="Observações adicionais..." value="${f.obs||''}"></div>
         </div>
         <div style="display:flex;gap:8px;margin-top:4px">
           <button class="btn btn-primary" onclick="submitLubri()">Registrar</button>
@@ -1571,153 +1626,325 @@ function renderNovaLubri(){
   </div>`;
 }
 
+// ── MODAL GERENCIAR USUÁRIOS ──
+function renderGerenciarUsuarios(){
+  return`<div class="overlay" onclick="if(event.target===this)set({modal:null})">
+    <div class="modal" style="max-width:680px">
+      <div class="modal-hd"><span class="modal-title">${ic('user')} Gerenciar Usuários</span><button class="modal-close" onclick="set({modal:null})">${IC.x}</button></div>
+      <div class="modal-body">
+        <!-- Lista de usuários -->
+        <div class="sec-title">Usuários Cadastrados</div>
+        ${S.usuarios.length===0?'<div class="empty">Carregando...</div>':
+        S.usuarios.map(u=>`<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg3);border-radius:var(--r3);margin-bottom:6px;border:1px solid var(--border)">
+          <div style="width:28px;height:28px;border-radius:50%;background:${u.perfil==='gestor'?'var(--blue)':u.perfil==='mecanico'?'var(--green)':'var(--purple)'};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;flex-shrink:0">
+            ${u.nome.substring(0,2).toUpperCase()}
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;font-weight:600">${u.nome}</div>
+            <div style="font-size:10px;color:var(--text3)">${u.email}</div>
+          </div>
+          <span class="perfil-badge ${perfilClass(u.perfil)}">${perfilLabel(u.perfil)}</span>
+          <span style="font-size:10px;color:${u.ativo?'var(--green2)':'var(--red2)'};font-weight:600">${u.ativo?'Ativo':'Bloqueado'}</span>
+          <button class="btn btn-ghost btn-sm" onclick="toggleUsuario(${u.id},${!u.ativo})">${u.ativo?'Bloquear':'Reativar'}</button>
+        </div>`).join('')}
+
+        <div class="divider"></div>
+        <div class="sec-title">Adicionar Novo Usuário</div>
+        <div class="frow">
+          <div class="fg"><label class="fl">Nome Completo *</label><input id="nu_nome" type="text" class="fc" placeholder="Nome do usuário"></div>
+          <div class="fg"><label class="fl">E-mail *</label><input id="nu_email" type="email" class="fc" placeholder="email@smmads.floripa.sc.gov.br"></div>
+        </div>
+        <div class="frow">
+          <div class="fg"><label class="fl">Senha *</label><input id="nu_senha" type="password" class="fc" placeholder="Mínimo 6 caracteres"></div>
+          <div class="fg"><label class="fl">Perfil</label>
+            <select id="nu_perfil" class="fc fsl">
+              <option value="administrativo">Administrativo</option>
+              <option value="mecanico">Mecânico</option>
+              <option value="gestor">Gestor</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <button class="btn btn-primary" onclick="criarUsuario()">${ic('plus')} Criar Usuário</button>
+          <button class="btn btn-ghost" onclick="set({modal:null})">Fechar</button>
+        </div>
+        <div style="margin-top:12px;padding:10px;background:var(--bg3);border-radius:var(--r3);font-size:10px;color:var(--text3)">
+          💡 Para alterar senha de um usuário existente, acesse <strong style="color:var(--text2)">Supabase → Editor SQL</strong> e use o arquivo <strong style="color:var(--text2)">04_GERENCIAR_USUARIOS.sql</strong> que você baixou anteriormente.
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── MODAL CONSULTA RÁPIDA DE FROTA ──
+function renderFleetLookup(){
+  const v=S.lookupResult;
+  const st=v?getStatus(v):null;
+  const lp=v?litPct(v):null;
+  const dp=v?daysPct(v):null;
+  return`<div class="overlay" onclick="if(event.target===this)set({modal:null,lookupFrota:'',lookupResult:null})">
+    <div class="modal" style="max-width:560px">
+      <div class="modal-hd"><span class="modal-title">${ic('eye')} Consulta Rápida de Frota</span><button class="modal-close" onclick="set({modal:null,lookupFrota:'',lookupResult:null})">${IC.x}</button></div>
+      <div class="modal-body">
+        <div style="display:flex;gap:8px;margin-bottom:14px">
+          <input id="lookup_frota" type="text" class="fc" style="flex:1" placeholder="Digite o nº da frota ou placa (ex: 283 ou QIU2609)"
+            value="${S.lookupFrota}" onkeydown="if(event.key==='Enter')fazerLookup()">
+          <button class="btn btn-primary" onclick="fazerLookup()">${ic('eye')} Consultar</button>
+        </div>
+        ${v?`
+        <div style="background:${st.pri>=4?'var(--red-bg)':st.pri>=2?'var(--orange-bg)':st.key==='manut'?'var(--blue-bg)':'var(--green-bg)'};border:1px solid ${st.pri>=4?'#ef444433':st.pri>=2?'#f9731633':st.key==='manut'?'#3b82f633':'#22c55e33'};border-radius:var(--r);padding:12px;margin-bottom:12px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span class="fn" style="font-size:16px">${v.frota}</span>
+            <span class="plate">${v.placa}</span>
+            <span class="badge ${st.cls}">${st.label}</span>
+          </div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:4px">${v.modelo}</div>
+          <div style="font-size:11px;color:var(--text2)">${tipoLabel(v.tipo)} · ${v.km_atual>0?fmtN(v.km_atual)+' km':'Horímetro'}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          ${lp!==null?`<div class="kpi" style="padding:10px"><div class="kpi-label">Litros Acum.</div>
+            <div style="font-size:18px;font-weight:800;font-family:var(--mono)">${Math.round(v.litros_acum)}<span style="font-size:11px;color:var(--text3)">/${v.gatilho_litros}L</span></div>
+            <div class="pb" style="margin-top:5px"><div class="pb-fill ${pbClass(lp)}" style="width:${lp}%"></div></div>
+          </div>`:''}
+          <div class="kpi" style="padding:10px"><div class="kpi-label">Dias s/ Troca</div>
+            <div style="font-size:18px;font-weight:800;font-family:var(--mono)">${daysSince(v)}<span style="font-size:11px;color:var(--text3)">/${v.gatilho_dias}d</span></div>
+            <div class="pb" style="margin-top:5px"><div class="pb-fill ${pbClass(dp)}" style="width:${dp}%"></div></div>
+          </div>
+        </div>
+        <div class="dr"><span class="dk">Última troca</span><span class="dv">${fmtDate(v.data_ultima_troca)}</span></div>
+        <div class="dr"><span class="dk">Abastecimentos</span><span class="dv">${v.n_abast}</span></div>
+        ${v.media_kml>0&&v.media_kml<200?`<div class="dr"><span class="dk">Média KM/L</span><span class="dv">${v.media_kml}</span></div>`:''}
+        <div style="display:flex;gap:8px;margin-top:12px">
+          ${pode('abrirOS')?`<button class="btn btn-primary btn-sm" onclick="set({modal:'nova_os',newOS:{frota:${v.frota},defeito:'',mecanico:'',prioridade:'normal'}})">${ic('plus')} Abrir OS</button>`:''}
+          <button class="btn btn-ghost btn-sm" onclick="set({modal:null,lookupFrota:'',lookupResult:null});openDetail(${v.frota})">Ver Detalhes</button>
+        </div>`:`<div class="empty" style="padding:20px">Digite o nº da frota ou placa e pressione Enter</div>`}
+      </div>
+    </div>
+  </div>`;
+}
 
 // ── ACTIONS ──
 function openDetail(frota){set({vDetail:frota});}
 
 async function submitOS(){
-  const f=S.newOS;
-  if(!f.frota||!f.defeito){alert('Preencha a Frota e o Defeito/Serviço.');return;}
+  // Ler valores dos IDs fixos (não perde foco)
+  const frota = parseInt(document.getElementById('os_frota')?.value)||document.getElementById('os_frota')?.value||'';
+  const defeito = document.getElementById('os_defeito')?.value?.trim()||'';
+  const mecanico = document.getElementById('os_mecanico')?.value||'';
+  const prioridade = document.getElementById('os_prioridade')?.value||'normal';
+  if(!frota||!defeito){alert('Preencha a Frota e o Defeito/Serviço.');return;}
   const num = nextOS();
   const novaOS = {
-    numero: num, frota: f.frota,
+    numero: num, frota,
     data: new Date().toISOString().split('T')[0],
-    defeito: f.defeito, mecanico: f.mecanico||null,
-    prioridade: f.prioridade, status: 'aberta', conclusao: null
+    defeito, mecanico:mecanico||null,
+    prioridade, status: 'aberta', conclusao: null
   };
-  // Salvar no Supabase
   const res = await supa('ordens_servico', {method:'POST', body: novaOS});
-  // Adicionar localmente
   serviceOrders.unshift({...novaOS, num, id: res?.[0]?.id||null});
   set({modal:null, page:'ordens', newOS:{frota:'',defeito:'',mecanico:'',prioridade:'normal'}});
 }
 
+async function salvarEditOS(){
+  const o = S.editOS;
+  if(!o) return;
+  const defeito = document.getElementById('os_defeito')?.value?.trim()||o.defeito;
+  const mecanico = document.getElementById('os_mecanico')?.value||o.mecanico;
+  const status = document.getElementById('os_status')?.value||o.status;
+  const obs = document.getElementById('os_obs')?.value||'';
+  const conclusao = status==='concluida'?(o.conclusao||new Date().toISOString().split('T')[0]):null;
+  await supa('ordens_servico?numero=eq.'+o.num, {
+    method:'PATCH',
+    body:{defeito, mecanico, status, conclusao, obs},
+    prefer:'return=minimal'
+  });
+  serviceOrders.forEach(os=>{
+    if(os.num===o.num){os.defeito=defeito;os.mecanico=mecanico;os.status=status;os.conclusao=conclusao;os.obs=obs;}
+  });
+  set({modal:null, editOS:null});
+}
+
+function concluirOSRapido(){
+  const o=S.editOS; if(!o)return;
+  const conclusao=new Date().toISOString().split('T')[0];
+  supa('ordens_servico?numero=eq.'+o.num,{method:'PATCH',body:{status:'concluida',conclusao},prefer:'return=minimal'});
+  serviceOrders.forEach(os=>{if(os.num===o.num){os.status='concluida';os.conclusao=conclusao;}});
+  set({modal:null,editOS:null});
+}
+
 async function changeOS(num, novoStatus){
   const conclusao = novoStatus==='concluida' ? new Date().toISOString().split('T')[0] : null;
-  // Atualizar no Supabase
   await supa('ordens_servico?numero=eq.'+num, {
     method:'PATCH',
     body:{status: novoStatus, conclusao},
     prefer:'return=minimal'
   });
-  // Atualizar localmente
   serviceOrders.forEach(o=>{
     if(o.num===num){ o.status=novoStatus; if(conclusao) o.conclusao=conclusao; }
   });
   render();
 }
 
+// ── LOOKUP ──
+function fazerLookup(){
+  const q=(document.getElementById('lookup_frota')?.value||S.lookupFrota).trim().toLowerCase();
+  if(!q)return;
+  const v=FROTA_SMADS.find(v=>String(v.frota)===q||v.placa.toLowerCase().replace(/[^a-z0-9]/g,'')===q.replace(/[^a-z0-9]/g,''));
+  set({lookupResult:v||null, lookupFrota:document.getElementById('lookup_frota')?.value||q});
+}
+
+// ── USUÁRIOS ──
+async function criarUsuario(){
+  const nome=document.getElementById('nu_nome')?.value?.trim();
+  const email=document.getElementById('nu_email')?.value?.trim();
+  const senha=document.getElementById('nu_senha')?.value;
+  const perfil=document.getElementById('nu_perfil')?.value||'administrativo';
+  if(!nome||!email||!senha){alert('Preencha nome, e-mail e senha.');return;}
+  if(senha.length<6){alert('Senha deve ter pelo menos 6 caracteres.');return;}
+  const hash=await hashSenha(senha);
+  const res=await supa('usuarios',{method:'POST',body:{nome,email,senha_hash:hash,perfil,ativo:true}});
+  if(res){
+    S.usuarios.push({id:res[0]?.id,nome,email,perfil,ativo:true});
+    alert(`Usuário ${nome} criado com sucesso!`);
+    document.getElementById('nu_nome').value='';
+    document.getElementById('nu_email').value='';
+    document.getElementById('nu_senha').value='';
+    render();
+  }
+}
+
+async function toggleUsuario(id, novoAtivo){
+  await supa('usuarios?id=eq.'+id,{method:'PATCH',body:{ativo:novoAtivo},prefer:'return=minimal'});
+  S.usuarios.forEach(u=>{if(u.id===id)u.ativo=novoAtivo;});
+  render();
+}
+
 async function submitAbast(){
-  const f=S.newAbast;
-  if(!f.frota||!f.data||!f.litros){alert('Preencha Frota, Data e Litros.');return;}
-  const frota = parseInt(f.frota)||f.frota;
-  const litros = parseFloat(f.litros);
-  const km = parseInt(f.km)||0;
-  const v = FROTA_SMADS.find(v=>v.frota===frota);
+  const frota=parseInt(document.getElementById('ab_frota')?.value)||document.getElementById('ab_frota')?.value||'';
+  const data=document.getElementById('ab_data')?.value||'';
+  const km=parseInt(document.getElementById('ab_km')?.value)||0;
+  const litros=parseFloat(document.getElementById('ab_litros')?.value)||0;
+  if(!frota||!data||!litros){alert('Preencha Frota, Data e Litros.');return;}
+  const v=FROTA_SMADS.find(v=>v.frota===frota||v.frota===parseInt(frota));
   if(!v){alert('Frota não encontrada.');return;}
-
-  // Salvar abastecimento no Supabase
-  await supa('abastecimentos', {
-    method:'POST',
-    body:{frota, placa: v.placa, data: f.data, km, litros}
-  });
-
-  // Atualizar acumulado no veículo
-  const novoAcum = Math.round((v.litros_acum + litros)*100)/100;
-  const novoKm = km > v.km_atual ? km : v.km_atual;
-  const novoStatus = (v.gatilho_litros>0 && novoAcum>=v.gatilho_litros) ? 'VENCIDO (LITROS)' : v.status_abast;
-
-  await supa('veiculos?frota=eq.'+frota, {
-    method:'PATCH',
-    body:{litros_acum: novoAcum, n_abast: v.n_abast+1, km_atual: novoKm, status_abast: novoStatus},
-    prefer:'return=minimal'
-  });
-
-  // Atualizar localmente
-  v.litros_acum = novoAcum;
-  v.n_abast++;
-  v.km_atual = novoKm;
-  v.status_abast = novoStatus;
-
-  set({modal:null, newAbast:{frota:'',data:'',km:'',litros:''}});
+  await supa('abastecimentos',{method:'POST',body:{frota:v.frota,placa:v.placa,data,km,litros}});
+  const novoAcum=Math.round((v.litros_acum+litros)*100)/100;
+  const novoKm=km>v.km_atual?km:v.km_atual;
+  const novoStatus=(v.gatilho_litros>0&&novoAcum>=v.gatilho_litros)?'VENCIDO (LITROS)':v.status_abast;
+  await supa('veiculos?frota=eq.'+v.frota,{method:'PATCH',body:{litros_acum:novoAcum,n_abast:v.n_abast+1,km_atual:novoKm,status_abast:novoStatus},prefer:'return=minimal'});
+  v.litros_acum=novoAcum; v.n_abast++; v.km_atual=novoKm; v.status_abast=novoStatus;
+  set({modal:null,newAbast:{frota:'',data:'',km:'',litros:''}});
 }
 
 async function submitManut(){
-  const f=S.newMaint;
-  if(!f.frota||!f.data){alert('Preencha Frota e Data.');return;}
-  const frota = parseInt(f.frota)||f.frota;
-  const km = parseInt(f.km)||0;
-  const v = FROTA_SMADS.find(v=>v.frota===frota);
+  const frota=parseInt(document.getElementById('mt_frota')?.value)||document.getElementById('mt_frota')?.value||'';
+  const data=document.getElementById('mt_data')?.value||'';
+  const km=parseInt(document.getElementById('mt_km')?.value)||0;
+  const servico=document.getElementById('mt_servico')?.value||'troca_oleo_motor';
+  const obs=document.getElementById('mt_obs')?.value||'';
+  if(!frota||!data){alert('Preencha Frota e Data.');return;}
+  const v=FROTA_SMADS.find(v=>v.frota===frota||v.frota===parseInt(frota));
   if(!v){alert('Frota não encontrada.');return;}
-
-  // Salvar manutenção no Supabase
-  await supa('manutencoes', {
-    method:'POST',
-    body:{frota, data: f.data, km, servico: f.servico, obs: f.obs||null}
-  });
-
-  // Zerar acumulado e atualizar veículo
-  const novoKm = km > v.km_atual ? km : v.km_atual;
-  await supa('veiculos?frota=eq.'+frota, {
-    method:'PATCH',
-    body:{
-      data_ultima_troca: f.data, km_ultima_troca: km||v.km_ultima_troca,
-      km_atual: novoKm, litros_acum: 0, n_abast: 0,
-      status_tempo:'OK', status_km:'OK', status_abast:'OK'
-    },
-    prefer:'return=minimal'
-  });
-
-  // Atualizar localmente
-  v.data_ultima_troca = f.data;
-  if(km>0){ v.km_ultima_troca=km; v.km_atual=novoKm; }
-  v.litros_acum=0; v.n_abast=0;
-  v.status_tempo='OK'; v.status_km='OK'; v.status_abast='OK';
-
-  set({modal:null, newMaint:{frota:'',data:'',km:'',servico:'troca_oleo_motor',obs:''}});
+  await supa('manutencoes',{method:'POST',body:{frota:v.frota,data,km,servico,obs:obs||null}});
+  const novoKm=km>v.km_atual?km:v.km_atual;
+  await supa('veiculos?frota=eq.'+v.frota,{method:'PATCH',body:{data_ultima_troca:data,km_ultima_troca:km||v.km_ultima_troca,km_atual:novoKm,litros_acum:0,n_abast:0,status_tempo:'OK',status_km:'OK',status_abast:'OK',total_oleo_adicionado:0,alerta_consumo_oleo:false},prefer:'return=minimal'});
+  v.data_ultima_troca=data; if(km>0){v.km_ultima_troca=km;v.km_atual=novoKm;}
+  v.litros_acum=0;v.n_abast=0;v.status_tempo='OK';v.status_km='OK';v.status_abast='OK';
+  v.total_oleo_adicionado=0;v.alerta_consumo_oleo=false;
+  set({modal:null,newMaint:{frota:'',data:'',km:'',servico:'troca_oleo_motor',obs:''}});
 }
 
 async function submitLubri(){
-  const f=S.newLubri;
-  if(!f.frota||!f.data){alert('Preencha Frota e Data.');return;}
-  const frota=parseInt(f.frota)||f.frota;
-  const v=FROTA_SMADS.find(v=>v.frota===frota);
+  const frota=parseInt(document.getElementById('lb_frota')?.value)||document.getElementById('lb_frota')?.value||'';
+  const data=document.getElementById('lb_data')?.value||'';
+  const km=parseInt(document.getElementById('lb_km')?.value)||0;
+  const oleoMotor=parseFloat(document.getElementById('lb_oleo_motor')?.value)||0;
+  const oleoCambio=parseFloat(document.getElementById('lb_oleo_cambio')?.value)||0;
+  const oleoDif=parseFloat(document.getElementById('lb_oleo_dif')?.value)||0;
+  const graxa=parseFloat(document.getElementById('lb_graxa')?.value)||0;
+  const arla=parseFloat(document.getElementById('lb_arla')?.value)||0;
+  const filtroOleo=document.getElementById('lb_filtro_oleo')?.classList.contains('on')||false;
+  const filtroAr=document.getElementById('lb_filtro_ar')?.classList.contains('on')||false;
+  const filtroComb=document.getElementById('lb_filtro_comb')?.classList.contains('on')||false;
+  const filtroArla=document.getElementById('lb_filtro_arla')?.classList.contains('on')||false;
+  const mecanico=document.getElementById('lb_mecanico')?.value||'';
+  const obs=document.getElementById('lb_obs')?.value||'';
+  if(!frota||!data){alert('Preencha Frota e Data.');return;}
+  const v=FROTA_SMADS.find(v=>v.frota===frota||v.frota===parseInt(frota));
   if(!v){alert('Frota não encontrada.');return;}
-  const km=parseInt(f.km)||0;
-  const oleoMotor=parseFloat(f.oleo_motor_l)||0;
-
-  // Salvar no Supabase
-  const payload={
-    frota, data:f.data, km,
-    oleo_motor_l:oleoMotor,
-    oleo_cambio_l:parseFloat(f.oleo_cambio_l)||0,
-    oleo_diferencial_l:parseFloat(f.oleo_diferencial_l)||0,
-    graxa_kg:parseFloat(f.graxa_kg)||0,
-    arla32_l:parseFloat(f.arla32_l)||0,
-    filtro_oleo:f.filtro_oleo, filtro_ar:f.filtro_ar,
-    filtro_combustivel:f.filtro_combustivel, filtro_arla:f.filtro_arla,
-    obs:f.obs||null, mecanico:f.mecanico||null
-  };
+  const payload={frota:v.frota,data,km,oleo_motor_l:oleoMotor,oleo_cambio_l:oleoCambio,oleo_diferencial_l:oleoDif,graxa_kg:graxa,arla32_l:arla,filtro_oleo:filtroOleo,filtro_ar:filtroAr,filtro_combustivel:filtroComb,filtro_arla:filtroArla,obs:obs||null,mecanico:mecanico||null};
   await supa('lubrificacao',{method:'POST',body:payload});
-
-  // Alerta de alto consumo de óleo (se adicionou óleo motor sem troca)
   if(oleoMotor>0){
     const novoTotal=(v.total_oleo_adicionado||0)+oleoMotor;
-    const alertar=novoTotal>=(v.gatilho_litros*0.1); // 10% da capacidade de óleo
-    await supa('veiculos?frota=eq.'+frota,{method:'PATCH',body:{total_oleo_adicionado:novoTotal,alerta_consumo_oleo:alertar},prefer:'return=minimal'});
-    v.total_oleo_adicionado=novoTotal;
-    v.alerta_consumo_oleo=alertar;
+    const alertar=novoTotal>=(v.gatilho_litros*0.1);
+    await supa('veiculos?frota=eq.'+v.frota,{method:'PATCH',body:{total_oleo_adicionado:novoTotal,alerta_consumo_oleo:alertar},prefer:'return=minimal'});
+    v.total_oleo_adicionado=novoTotal;v.alerta_consumo_oleo=alertar;
   }
-
-  // Atualizar KM local
-  if(km>v.km_atual){v.km_atual=km;}
-
-  // Adicionar à lista local de lubrificações
-  S.lubrificacoes.push({...payload,id:Date.now()});
-
+  if(km>v.km_atual)v.km_atual=km;
+  S.lubrificacoes.unshift({...payload,id:Date.now()});
   set({modal:null,newLubri:{frota:'',data:'',km:'',oleo_motor_l:'',oleo_cambio_l:'',oleo_diferencial_l:'',graxa_kg:'',arla32_l:'',filtro_oleo:false,filtro_ar:false,filtro_combustivel:false,filtro_arla:false,obs:'',mecanico:''}});
 }
 
+// ── PDF DE ORDEM DE SERVIÇO ──
+function imprimirOS(num){
+  const o=serviceOrders.find(o=>o.num===num);
+  if(!o)return;
+  const v=FROTA_SMADS.find(v=>v.frota===o.frota);
+  const statusMap={aberta:'ABERTA',em_andamento:'EM ANDAMENTO',concluida:'CONCLUÍDA',cancelada:'CANCELADA'};
+  const win=window.open('','_blank');
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${o.num}</title>
+  <style>
+    body{font-family:Arial,sans-serif;font-size:12px;padding:20px;color:#000}
+    h1{font-size:16px;margin:0}
+    .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;border-bottom:2px solid #000;padding-bottom:12px}
+    .os-num{font-size:22px;font-weight:bold;color:#1a56db}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    td,th{border:1px solid #ccc;padding:6px 8px;text-align:left}
+    th{background:#f0f0f0;font-weight:600}
+    .status{display:inline-block;padding:3px 10px;border-radius:4px;font-weight:700;font-size:11px;background:${o.status==='concluida'?'#d1fae5':o.status==='aberta'?'#fef9c3':'#dbeafe'};color:${o.status==='concluida'?'#065f46':o.status==='aberta'?'#713f12':'#1e40af'}}
+    .section{margin-top:14px;font-weight:600;font-size:13px;border-bottom:1px solid #ccc;padding-bottom:4px}
+    .defeito-box{background:#fafafa;border:1px solid #ddd;border-radius:4px;padding:10px;margin-top:6px;min-height:60px}
+    .assinatura{display:flex;gap:40px;margin-top:30px}
+    .ass-line{flex:1;border-top:1px solid #000;padding-top:4px;text-align:center;font-size:11px}
+    @media print{body{padding:10px}.no-print{display:none}}
+  </style></head><body>
+  <div class="header">
+    <div>
+      <div style="font-size:11px;color:#666">Prefeitura Municipal de Florianópolis</div>
+      <div style="font-size:13px;font-weight:600">Secretaria de Meio Ambiente e Desenvolvimento Sustentável – SMMADS</div>
+      <h1>Ordem de Serviço</h1>
+    </div>
+    <div style="text-align:right">
+      <div class="os-num">${o.num}</div>
+      <span class="status">${statusMap[o.status]||o.status.toUpperCase()}</span>
+    </div>
+  </div>
+  <table>
+    <tr><th style="width:25%">Nº Frota</th><td><strong>${o.frota}</strong></td><th style="width:25%">Placa</th><td>${v?.placa||'—'}</td></tr>
+    <tr><th>Modelo</th><td colspan="3">${v?.modelo||'—'}</td></tr>
+    <tr><th>Data de Abertura</th><td>${new Date(o.data+'T12:00:00').toLocaleDateString('pt-BR')}</td><th>Data de Conclusão</th><td>${o.conclusao?new Date(o.conclusao+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td></tr>
+    <tr><th>Mecânico</th><td>${o.mecanico||'A definir'}</td><th>Prioridade</th><td>${o.prioridade==='urgente'?'⚠ URGENTE':'Normal'}</td></tr>
+    <tr><th>KM no Atendimento</th><td>${v?.km_atual>0?v.km_atual.toLocaleString('pt-BR')+' km':'—'}</td><th>Abertura por</th><td>${USUARIO_LOGADO?.nome||'—'}</td></tr>
+  </table>
+  <div class="section">Defeito / Serviço Solicitado</div>
+  <div class="defeito-box">${o.defeito}</div>
+  ${o.obs?`<div class="section">Resolução / Observações</div><div class="defeito-box">${o.obs}</div>`:''}
+  <div class="assinatura">
+    <div class="ass-line">Solicitante</div>
+    <div class="ass-line">Mecânico Responsável</div>
+    <div class="ass-line">Supervisor / Gestor</div>
+  </div>
+  <div style="margin-top:20px;font-size:10px;color:#999;text-align:center">
+    FleetMaster SMMADS · Emitido em ${new Date().toLocaleString('pt-BR')} por ${USUARIO_LOGADO?.nome||'Sistema'}
+  </div>
+  <div class="no-print" style="margin-top:16px;text-align:center">
+    <button onclick="window.print()" style="padding:8px 20px;background:#1a56db;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px">🖨 Imprimir / Salvar PDF</button>
+    <button onclick="window.close()" style="padding:8px 20px;background:#f0f0f0;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:13px;margin-left:8px">Fechar</button>
+  </div>
+  </body></html>`);
+  win.document.close();
+  setTimeout(()=>win.print(),500);
+}
 
 // ── RENDER PRINCIPAL ──
 function render(){
@@ -1729,13 +1956,12 @@ function render(){
         <div style="font-size:15px;font-weight:700">FleetMaster · SMMADS</div>
         <div style="font-size:12px;color:var(--text3)">Carregando dados da frota...</div>
         <div style="width:200px;height:3px;background:var(--bg3);border-radius:2px;overflow:hidden">
-          <div style="height:100%;background:var(--blue);border-radius:2px;animation:load 1.2s ease-in-out infinite" id="loader"></div>
+          <div style="height:100%;background:var(--blue);border-radius:2px;animation:load 1.2s ease-in-out infinite"></div>
         </div>
         <style>@keyframes load{0%{width:0%;margin-left:0}50%{width:60%;margin-left:20%}100%{width:0%;margin-left:100%}}</style>
       </div>`;
     return;
   }
-  // Se não logado, mostra tela de login
   if(!USUARIO_LOGADO){
     document.getElementById('app').innerHTML=renderLogin();
     return;
@@ -1747,9 +1973,10 @@ function render(){
         <div class="topbar-title">${pageTitle[S.page]||''}</div>
         <div class="search-wrap"><input class="si" placeholder="Buscar frota, placa ou modelo..." value="${S.q}" oninput="set({q:this.value,page:this.value?'veiculos':S.page})"></div>
         <div class="tb-actions">
-          ${pode('abrirOS')?`<button class="btn btn-primary" onclick="set({modal:'nova_os'})">${ic('plus')} Nova OS</button>`:''}
-          ${pode('registrarAbast')?`<button class="btn btn-ghost" onclick="set({modal:'novo_abast'})" title="Registrar Abastecimento">${ic('fuel')}</button>`:''}
-          ${pode('registrarLubri')?`<button class="btn btn-ghost" onclick="set({modal:'nova_lubri'})" title="Rampa de Lubrificação">${ic('oil')}</button>`:''}
+          <button class="btn btn-ghost btn-sm" onclick="set({modal:'fleet_lookup'})" title="Consulta Rápida">${ic('eye')} Consultar</button>
+          ${pode('abrirOS')?`<button class="btn btn-primary" onclick="set({modal:'nova_os',editOS:null,newOS:{frota:'',defeito:'',mecanico:'',prioridade:'normal'}})">${ic('plus')} Nova OS</button>`:''}
+          ${pode('registrarAbast')?`<button class="btn btn-ghost" onclick="set({modal:'novo_abast'})" title="Abastecimento">${ic('fuel')}</button>`:''}
+          ${pode('registrarLubri')?`<button class="btn btn-ghost" onclick="set({modal:'nova_lubri'})" title="Lubrificação">${ic('oil')}</button>`:''}
           <div class="user-menu" onclick="set({showUserMenu:!S.showUserMenu})">
             <div class="av-tb" style="background:${USUARIO_LOGADO?.perfil==='gestor'?'linear-gradient(135deg,var(--blue),var(--purple))':USUARIO_LOGADO?.perfil==='mecanico'?'linear-gradient(135deg,var(--green),var(--cyan))':'linear-gradient(135deg,var(--purple),var(--orange))'}">
               ${(USUARIO_LOGADO?.nome||'?').substring(0,2).toUpperCase()}
@@ -1759,6 +1986,7 @@ function render(){
                 <div style="font-size:11px;font-weight:600">${USUARIO_LOGADO?.nome}</div>
                 <span class="perfil-badge ${perfilClass(USUARIO_LOGADO?.perfil)}">${perfilLabel(USUARIO_LOGADO?.perfil)}</span>
               </div>
+              ${pode('gerenciarUsuarios')?`<div class="user-dd-item" onclick="abrirGerenciarUsuarios()">${ic('user')} Gerenciar Usuários</div>`:''}
               <div class="user-dd-item danger" onclick="encerrarSessao()">${ic('logout')} Sair do Sistema</div>
             </div>
           </div>
@@ -1767,14 +1995,24 @@ function render(){
       <div class="content">${(pages[S.page]||renderDash)()}</div>
     </div>
     ${S.vDetail?renderDetail():''}
-    ${S.modal==='nova_os'?renderNovaOS():''}
+    ${S.modal==='nova_os'||S.modal==='editar_os'?renderNovaOS():''}
     ${S.modal==='novo_abast'?renderNovoAbast():''}
     ${S.modal==='novo_manut'?renderNovoManut():''}
     ${S.modal==='nova_lubri'?renderNovaLubri():''}
+    ${S.modal==='gerenciar_usuarios'?renderGerenciarUsuarios():''}
+    ${S.modal==='fleet_lookup'?renderFleetLookup():''}
   `;
 }
 
-// Iniciar: mostrar loading e carregar dados do Supabase
+async function abrirGerenciarUsuarios(){
+  if(!S.usuarios.length){
+    const users=await supa('usuarios?order=id');
+    if(users)S.usuarios=users;
+  }
+  set({modal:'gerenciar_usuarios',showUserMenu:false});
+}
+
+// Iniciar
 render();
 carregarDados();
 </script>
